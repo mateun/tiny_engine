@@ -30,7 +30,7 @@ You can choose which parts to use, only these are compiled.
 
 To select modules, you must use these pre-processor definitions: 
 
-/DTE_MATH
+/DTE_MATH\
 /DTE_WINDOWING
 /DTE_2D
 /DTE_3D
