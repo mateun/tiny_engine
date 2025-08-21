@@ -5,6 +5,8 @@
 // TE_MATH etc.
 // TODO add better documentation here
 
+#include <wincodec.h>
+#include <map>
 #include <comdef.h>
 #include <cassert>
 #include <ppltasks.h>
@@ -18,6 +20,11 @@ using Microsoft::WRL::ComPtr;
 /// Represents a 3D API abstraction, 
 /// eg. for OpenGL, DirectX, Vulkan etc.
 namespace tiny_engine {
+
+    struct Texture 
+    {
+        uint32_t id;
+    };
 
     struct Event 
     {
@@ -75,12 +82,17 @@ namespace tiny_engine {
     /// Must be done before any clear or draw operation.
     void bindBackBuffer(Context3D* context, int x, int y, int width, int height);
 
+    Texture createTextureFromFile(Context3D* context, const std::string& fileName);
+
 
 
     /// This is the private part of the API, 
     /// should only be used internally. 
     /// Call at your own risk, but better do not call at all!
     namespace detail {
+
+
+        
 
 
 
@@ -93,6 +105,7 @@ namespace tiny_engine {
             void clearBackBuffer(float r, float g, float b, float a);
             void presentBackBuffer();
             void bindBackBuffer(int x, int y, int width, int height);
+            void createTextureFromFile(const std::string& fileName);
 
 
             ComPtr<ID3D11Device> dx11Device;
@@ -107,6 +120,15 @@ namespace tiny_engine {
             ComPtr<ID3D11RasterizerState> dx11RasterState;
             ComPtr<ID3D11SamplerState> dx11SamplerState;
             ComPtr<ID3D11BlendState> dx11BlendState;
+
+
+            struct DX11Texture {
+                ComPtr<ID3D11Texture2D> texture;
+                ComPtr<ID3D11RenderTargetView> rtv;
+            };
+
+
+            std::map<uint32_t, DX11Texture> textureStorage;
 
         }
 
@@ -177,7 +199,7 @@ void tiny_engine::detail::dx11::presentBackBuffer()
         std::wcerr << L"Present failed: " << _com_error(result).ErrorMessage() << std::endl;
         auto reason = dx11Device->GetDeviceRemovedReason();
         std::cerr << "Device removed reason: " << reason << std::endl;
-        exit(1);
+        // TODO further error handling
     }
 }
 
@@ -197,6 +219,36 @@ void tiny_engine::detail::dx11::printDXGIError(HRESULT hr) {
     {
         // Error not known by the OS
     }
+}
+
+
+tiny_engine::detail::dx11::DX11Texture createTextureFromFile(const std::wstring& fileName)
+{
+
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
+    CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                     IID_PPV_ARGS(&wic));
+
+    Microsoft::WRL::ComPtr<IWICBitmapDecoder> dec;
+    if (FAILED(wic->CreateDecoderFromFilename(fileName.c_str(), nullptr, GENERIC_READ,
+                                              WICDecodeMetadataCacheOnDemand, &dec)))
+    return {};
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    dec->GetFrame(0, &frame);
+
+    // Convert to straight RGBA (not pre-multiplied)
+    Microsoft::WRL::ComPtr<IWICFormatConverter> conv;
+    wic->CreateFormatConverter(&conv);
+    conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA,
+                     WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom);
+
+    UINT w = 0, h = 0;
+    conv->GetSize(&w, &h);
+    std::vector<uint8_t> buffer(w * h * 4);
+    conv->CopyPixels(nullptr, w * 4, (UINT)buffer.size(), buffer.data());
 }
     
 

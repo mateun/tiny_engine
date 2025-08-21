@@ -12,6 +12,8 @@ int main(int argc, char** args)
     auto window = tiny_engine::createWindow(800, 600, false);
     auto ctx3d = tiny_engine::init3D("dx11", window);
 
+    auto heroTexture = tiny_engine::createTextureFromFile("sampleAssets/hero.png");
+
 
 
     bool runGame = true;
@@ -24,7 +26,13 @@ int main(int argc, char** args)
             if (e.type == "quit") runGame = false;
         }
 
+        tiny_engine::bindBackBuffer(ctx3d, 0, 0, 800, 600);
         tiny_engine::clearBackBuffer(ctx3d, 1, 0, 0, 1);
+
+
+
+
+
         tiny_engine::presentBackBuffer(ctx3d);
 
     }
