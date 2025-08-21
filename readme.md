@@ -36,7 +36,7 @@ To select modules, you must use these pre-processor definitions:
 /DTE_3D\
 /DTE_NETWORK\
 /DTE_PHYSICS\
-/DTE_GAMEPLAY\
+/DTE_GAMEPLAY
 
 To use everything, just do:
 
