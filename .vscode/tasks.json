@@ -27,6 +27,8 @@
                 "d3d11.lib",
                 "dxguid.lib",
                 "dsound.lib",
+                "dwrite.lib",
+                "d2d1.lib",
                 "d3dcompiler.lib",
                 "xinput.lib",
                 

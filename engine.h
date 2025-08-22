@@ -13,6 +13,8 @@
 #include <vector>
 #include <iostream>
 #include <string>
+#include <dwrite.h>
+#include <d2d1.h>
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
@@ -138,6 +140,8 @@ namespace tiny_engine {
                 uint32_t cameraBufferId;
 
                 DirectX::XMMATRIX orthoProjectionMatrix;
+
+                HWND hwnd;
 
             };
 
@@ -266,6 +270,12 @@ namespace tiny_engine {
             ComPtr<ID3D11SamplerState> dx11SamplerState;
             ComPtr<ID3D11BlendState> dx11BlendState;
 
+            ComPtr<IDWriteFactory> dwriteFactory;
+            ComPtr<IDWriteTextFormat> textFormat;
+            ComPtr<ID2D1Factory> d2dFactory;
+            ComPtr<ID2D1RenderTarget> d2dRenderTarget;
+            ComPtr<ID2D1SolidColorBrush> blackBrush;
+
             ResourceStorage<DX11Texture> textureStorage;
             ResourceStorage<ShaderProgram> shaderProgramStorage;
             ResourceStorage<VertexShader> vertexShaderStorage;
@@ -303,6 +313,8 @@ tiny_engine::GraphicsContext* tiny_engine::initGraphics(const std::string& api,
 
     if (tiny_engine::detail::dx11::init(window)) 
     {
+
+        dx11InternalContext.hwnd = (HWND) window.nativeWindowHandle;
 
         auto dx11Context = new tiny_engine::GraphicsContext();
         dx11Context->api = api;
@@ -829,6 +841,37 @@ void dx11::drawTexture(dx11::DX11Texture* texture, dx11::Sampler* sampler,
     drawIndexed(quadModel->indexCount, 0);
 
 
+    // Dummy test for dwrite rendering:
+    RECT rc;
+    GetClientRect(dx11InternalContext.hwnd, &rc);
+    D2D1_RECT_F layoutRect = D2D1::RectF(
+    static_cast<FLOAT>(rc.left) / 1,
+    static_cast<FLOAT>(rc.top) / 1,
+    static_cast<FLOAT>(rc.right - rc.left) / 1,
+    static_cast<FLOAT>(rc.bottom - rc.top) / 1
+    );
+
+    d2dRenderTarget->BeginDraw();
+
+    d2dRenderTarget->SetTransform(D2D1::IdentityMatrix());
+
+    //d2dRenderTarget->Clear(D2D1::ColorF(D2D1::ColorF::Blue));
+
+    static int frame = 0;
+    frame++;
+    std::wstring text = L"fps" + std::to_wstring(frame);
+    
+    d2dRenderTarget->DrawText(
+        text.c_str(),        // The string to render.
+        (uint32_t)wcslen(text.c_str()),    // The string's length.
+        textFormat.Get(),    // The text format.
+        layoutRect,       // The region of the window where the text will be rendered.
+        blackBrush.Get()     // The brush used to draw the text.
+    );
+    
+    d2dRenderTarget->EndDraw();
+    // End drawing experiment
+    
     
     // We must bind the texture, shader, inputlayout, (later) constant buffers, 
     // vertex buffer, index buffer, then draw indexed.
@@ -964,7 +1007,7 @@ void tiny_engine::detail::dx11::clearBackBuffer(float r, float g, float b, float
 bool tiny_engine::detail::dx11::init(Window window)
 {
     D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_1;
-    UINT flags = 0;
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 
     #ifdef _DEBUG
     flags |= D3D11_CREATE_DEVICE_DEBUG;
@@ -1059,7 +1102,8 @@ bool tiny_engine::detail::dx11::init(Window window)
     sd.BufferDesc.Height = window.height;
     sd.BufferDesc.RefreshRate.Numerator = 60;
     sd.BufferDesc.RefreshRate.Denominator = 1;
-    sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    //sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     sd.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
     sd.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
     sd.SampleDesc.Count   = 1;
@@ -1121,9 +1165,59 @@ bool tiny_engine::detail::dx11::init(Window window)
     }
     float blendFactor[4] = { 0, 0, 0, 0 };
     dx11Context->OMSetBlendState(dx11BlendState.Get(), blendFactor, 0xffffffff);
-
-
     bindBackBuffer(0, 0, window.width, window.height);
+
+    // ---------------------------------------------------------------------
+    // D2D/DWRITE initialization:
+    result = D2D1CreateFactory(
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, d2dFactory.GetAddressOf());
+    if (FAILED(result)) return false;
+
+    result = DWriteCreateFactory(
+        DWRITE_FACTORY_TYPE_SHARED,
+        __uuidof(IDWriteFactory),
+        reinterpret_cast<IUnknown**>(dwriteFactory.GetAddressOf())
+        );
+    if (FAILED(result)) return false;
+
+    result = dwriteFactory->CreateTextFormat(
+        L"courier new",                // Font family name.
+        NULL,                       // Font collection (NULL sets it to use the system font collection).
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        55.0f,
+        L"en-us",
+        textFormat.GetAddressOf());
+    if (FAILED(result)) return false;
+
+    result = textFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    if (FAILED(result)) return false;
+
+    result = textFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    if (FAILED(result)) return false;
+
+    
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
+
+    
+    ComPtr<IDXGISurface> dxgiSurface;
+    result = dx11BackBuffer.As(&dxgiSurface); 
+    if (FAILED(result)) return false;
+    D2D1_RENDER_TARGET_PROPERTIES props =
+    D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN, D2D1_ALPHA_MODE_PREMULTIPLIED));
+    result = d2dFactory->CreateDxgiSurfaceRenderTarget(dxgiSurface.Get(), props, d2dRenderTarget.GetAddressOf());
+    if (FAILED(result)) return false;
+    
+    result = d2dRenderTarget->CreateSolidColorBrush(
+        D2D1::ColorF(D2D1::ColorF::Blue),
+        blackBrush.GetAddressOf());
+
+    
 
     return true;
 
@@ -1214,6 +1308,8 @@ bool tiny_engine::detail::dx11::resizeSwapChain(HWND hwnd, int width, int height
         std::cout << "backbuffer creation/retrieval on swapchain resizing failed" << std::endl;
         return false;
     }
+
+    
 
     // Step 4: Create new render target view
     D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
