@@ -28,7 +28,7 @@ int main(int argc, char** args)
         }
 
         tiny_engine::bindBackBuffer(graphics, 0, 0, 800, 600);
-        tiny_engine::clearBackBuffer(graphics, 1, 0, 0, 1);
+        tiny_engine::clearBackBuffer(graphics, 0, 0, 0, 1);
 
         tiny_engine::drawTexture(graphics, heroTexture.value(), 100, 100);
         

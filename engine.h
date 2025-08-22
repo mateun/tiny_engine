@@ -845,29 +845,41 @@ void dx11::drawTexture(dx11::DX11Texture* texture, dx11::Sampler* sampler,
     RECT rc;
     GetClientRect(dx11InternalContext.hwnd, &rc);
     D2D1_RECT_F layoutRect = D2D1::RectF(
-    static_cast<FLOAT>(rc.left) / 1,
-    static_cast<FLOAT>(rc.top) / 1,
-    static_cast<FLOAT>(rc.right - rc.left) / 1,
-    static_cast<FLOAT>(rc.bottom - rc.top) / 1
+    0, 0, 200, 200
     );
 
     d2dRenderTarget->BeginDraw();
 
-    d2dRenderTarget->SetTransform(D2D1::IdentityMatrix());
+    d2dRenderTarget->SetTransform(D2D1::Matrix3x2F::Translation(20, 200));
 
+    // d2d rendertarget points to the same backbuffer as d3d, 
+    // so we shall not clear again, d3d already did (normally...)
     //d2dRenderTarget->Clear(D2D1::ColorF(D2D1::ColorF::Blue));
-
     static int frame = 0;
     frame++;
     std::wstring text = L"fps" + std::to_wstring(frame);
+
+    d2dRenderTarget->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    d2dRenderTarget->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
     
     d2dRenderTarget->DrawText(
         text.c_str(),        // The string to render.
-        (uint32_t)wcslen(text.c_str()),    // The string's length.
+        text.length(),    // The string's length.
         textFormat.Get(),    // The text format.
         layoutRect,       // The region of the window where the text will be rendered.
         blackBrush.Get()     // The brush used to draw the text.
     );
+
+    d2dRenderTarget->SetTransform(D2D1::IdentityMatrix());
+    for (int i = 0; i < 20; i++) {
+        int left = 200 + (i * 12);
+        int right = left + 8;
+        D2D1_RECT_F r = D2D1::RectF(left, 60, right, 80);
+        //d2dRenderTarget->DrawRectangle(r, blackBrush.Get(), 2.0f);
+        d2dRenderTarget->FillRectangle(r, blackBrush.Get());
+    }
+    
+    
     
     d2dRenderTarget->EndDraw();
     // End drawing experiment
@@ -1181,12 +1193,12 @@ bool tiny_engine::detail::dx11::init(Window window)
     if (FAILED(result)) return false;
 
     result = dwriteFactory->CreateTextFormat(
-        L"courier new",                // Font family name.
+        L"consolas",                // Font family name.
         NULL,                       // Font collection (NULL sets it to use the system font collection).
-        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_WEIGHT_NORMAL,
         DWRITE_FONT_STYLE_NORMAL,
         DWRITE_FONT_STRETCH_NORMAL,
-        55.0f,
+        18.0f,
         L"en-us",
         textFormat.GetAddressOf());
     if (FAILED(result)) return false;
@@ -1196,11 +1208,6 @@ bool tiny_engine::detail::dx11::init(Window window)
 
     result = textFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     if (FAILED(result)) return false;
-
-    
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
 
     
     ComPtr<IDXGISurface> dxgiSurface;
@@ -1214,7 +1221,7 @@ bool tiny_engine::detail::dx11::init(Window window)
     if (FAILED(result)) return false;
     
     result = d2dRenderTarget->CreateSolidColorBrush(
-        D2D1::ColorF(D2D1::ColorF::Blue),
+        D2D1::ColorF(D2D1::ColorF::GreenYellow),
         blackBrush.GetAddressOf());
 
     
