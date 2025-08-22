@@ -16,6 +16,8 @@
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
+#include <DirectXMath.h>
+#include <optional>
 using Microsoft::WRL::ComPtr;
 
 namespace tiny_engine {
@@ -47,6 +49,7 @@ namespace tiny_engine {
 
     };
 
+    
 
     /// Creates a window with the client area having the desired dimension.
     Window createWindow(int width, int height, bool fullscreen);
@@ -56,7 +59,6 @@ namespace tiny_engine {
     /// is closable etc.
     /// TODO return a list of frame events, including input events etc.
     std::vector<Event> pollWindowMessages(Window window);
-
 
     /// Holds the necessary data for a given 3D api. 
     /// Filled by the engine, borrowed to the client, 
@@ -70,27 +72,21 @@ namespace tiny_engine {
     /// opengl
     GraphicsContext* initGraphics(const std::string& api, Window window);
 
-
     /// Clears the backbuffer to the given RGB color, 
     /// and the depthbuffer to 1.
     void clearBackBuffer(GraphicsContext* context, float r, float g, float b, float a);
-
 
     /// 
     /// Flips the backbuffer, presenting its contents to the main window.
     void presentBackBuffer(GraphicsContext* context);
 
-
-
     /// Binds the default (window) backbuffer. 
     /// Must be done before any clear or draw operation.
     void bindBackBuffer(GraphicsContext* context, int x, int y, int width, int height);
 
-    Texture createTextureFromFile(GraphicsContext* context, const std::string& fileName);
-
+    std::optional<Texture> createTextureFromFile(GraphicsContext* context, const std::string& fileName);
 
     void drawTexture(GraphicsContext* dx11Context, Texture t, int x, int y);
-
 
     /// This is the private part of the API, 
     /// should only be used internally. 
@@ -137,12 +133,38 @@ namespace tiny_engine {
                 uint32_t spriteVertexBufferId;
                 uint32_t spriteIndexBufferId;
                 uint32_t spriteSamplerId;
+                uint32_t quadModelId;
+                uint32_t objectTransformBufferId;
+                uint32_t cameraBufferId;
 
+                DirectX::XMMATRIX orthoProjectionMatrix;
+
+            };
+
+            struct ConstantBuffer 
+            {
+
+                ComPtr<ID3D11Buffer> buffer;
+            };
+
+            struct Model 
+            {
+                ComPtr<ID3D11Buffer> vertexBuffer;
+                ComPtr<ID3D11Buffer> indexBuffer;
+                size_t indexCount = 0;
+                uint32_t stride = 0;
             };
 
             struct Sampler  
             {
                 ComPtr<ID3D11SamplerState> samplerState;
+            };
+
+            struct Camera
+            {
+
+                DirectX::XMFLOAT4X4 view;
+                DirectX::XMFLOAT4X4 projection;
             };
 
 
@@ -194,17 +216,40 @@ namespace tiny_engine {
             void clearBackBuffer(float r, float g, float b, float a);
             void presentBackBuffer();
             void bindBackBuffer(int x, int y, int width, int height);
-            void drawTexture(Texture texture, Sampler *sampler, ShaderProgram* shader,
-                                InputLayout* inputLayout, int x, int y);
-            void bindInputLayout(dx11::InputLayout* inputLayout);
-            void bindTexture(DX11Texture* texture, uint32_t slot, 
-                    Sampler* sampler, uint32_t samplerSlot);
+            void drawTexture(DX11Texture* texture, Sampler *sampler, ShaderProgram* shader,
+                                InputLayout* inputLayout, Model* quadModel,
+                                int x, int y);
+            void drawIndexed(uint32_t indexCount, uint32_t startIndex);
+            void bindInputLayout(dx11::InputLayout *inputLayout);
+            void bindVertexBuffer(ComPtr<ID3D11Buffer> vertexBuffer, uint32_t stride, uint32_t offset);
+            void bindIndexBuffer(ComPtr<ID3D11Buffer> indexBuffer, uint32_t offset);
+            void bindTexture(DX11Texture *texture, uint32_t slot,
+                             Sampler *sampler, uint32_t samplerSlot);
             void bindShader(ShaderProgram* shader);
+            void uploadConstantBufferDataForVertexShader(ComPtr<ID3D11Buffer> buffer, void *data, 
+                                                        size_t size, uint32_t slot);
+            void uploadConstantBufferDataForPixelShader(ComPtr<ID3D11Buffer> buffer, void *data, 
+                                                        size_t size, uint32_t slot);
+            void copyConstantBufferData(ComPtr<ID3D11Buffer> buffer, void *data, size_t size);
+
             VertexShader* createVertexShaderFromSource(const std::string& source);
             PixelShader* createPixelShaderFromSource(const std::string& source);
-            DX11Texture* createTextureFromFile(const std::string& fileName);
+            ConstantBuffer* createConstantBuffer(size_t size);
+            DX11Texture *createTextureFromFile(const std::string &fileName);
             InputLayout* createInputLayout(std::vector<dx11::VertexAttributeDescription> descs, 
                                                 dx11::ShaderProgram* shaderProgram);
+
+            Sampler *createSampler(D3D11_TEXTURE_ADDRESS_MODE addressMode,
+                                   DirectX::XMVECTOR borderColor, D3D11_FILTER filter);
+            ComPtr<ID3D11Buffer> createVertexBuffer(const float *data, size_t size, D3D11_USAGE usage);
+            ComPtr<ID3D11Buffer> createIndexBuffer(const uint32_t *data, size_t size, D3D11_USAGE usage);
+            Model* createModelFromGeometry(const std::vector<float>& vertices,
+                                            const std::vector<uint32_t>& indices, 
+                                            D3D11_USAGE bufferUsage, 
+                                            uint32_t stride);
+
+            
+
             std::string getSpriteVertexShaderSource();
             std::string getSpritePixelShaderSource();
 
@@ -226,7 +271,10 @@ namespace tiny_engine {
             ResourceStorage<VertexShader> vertexShaderStorage;
             ResourceStorage<PixelShader> pixelShaderStorage;
             ResourceStorage<Sampler> samplerStorage;
+            ResourceStorage<Model> modelStorage;
+            ResourceStorage<ConstantBuffer> constantBufferStorage;
             ResourceStorage<InputLayout> inputLayoutStorage;
+
 
 
         }
@@ -277,13 +325,68 @@ tiny_engine::GraphicsContext* tiny_engine::initGraphics(const std::string& api,
         auto spriteShaderProgramId = dx11::shaderProgramStorage.store(spriteShaderProgram);
         dx11InternalContext.spriteVertexShaderId = spriteVertexShaderId;
         dx11InternalContext.spritePixelShaderId = spritePixelShaderId;
+        dx11InternalContext.spriteShaderId = spriteShaderProgramId;
+
+        auto defaultSampler = dx11::createSampler(D3D11_TEXTURE_ADDRESS_WRAP, DirectX::XMVECTOR{1, 1,1,1}, 
+                                                        D3D11_FILTER_MIN_MAG_MIP_LINEAR );
+        auto defaultSamplerId = dx11::samplerStorage.store(defaultSampler);
+        dx11InternalContext.spriteSamplerId = defaultSamplerId;
 
         std::vector<dx11::VertexAttributeDescription> positionUVAttributes =  {
                             {"POSITION", 0, 3, DXGI_FORMAT_R32G32B32_FLOAT, sizeof(float) * 5, 0}, 
                             {"TEXCOORD", 0, 2, DXGI_FORMAT_R32G32_FLOAT, sizeof(float) * 5, sizeof(float) * 3}
                         };
         auto spriteInputLayout = dx11::createInputLayout(positionUVAttributes, spriteShaderProgram);
+        auto spriteInputLayoutId = dx11::inputLayoutStorage.store(spriteInputLayout);
+        dx11InternalContext.spriteShaderInputLayoutId = spriteInputLayoutId;
 
+        // Creating the quad model for all sprites:
+        std::vector<float> quadVertices = {
+            -0.5f, -0.5f, 0.0f, 0.0f, 0.0f,
+            0.5f, -0.5f, 0.0f, 1.0f, 0.0f,
+            -0.5f,  0.5f, 0.0f, 0.0f, 1.0f,
+            0.5, 0.5, 0.0f, 1.0f, 1.0f
+
+        };
+
+
+        std::vector<uint32_t> quadIndices = {
+            // 0,1, 2,
+            // 2, 1, 3
+
+                2,1,0, 
+                3,1,2
+
+        };
+        auto quadModel = dx11::createModelFromGeometry(quadVertices, 
+                                                        quadIndices, 
+                                                        D3D11_USAGE_DEFAULT, 5  * sizeof(float));
+        dx11InternalContext.quadModelId = dx11::modelStorage.store(quadModel);
+
+        // Create a constant buffer to hold the worldmatrix for object transformations:
+        auto objectTransformBuffer = dx11::createConstantBuffer(sizeof(DirectX::XMMATRIX));
+        dx11InternalContext.objectTransformBufferId = dx11::constantBufferStorage.store(objectTransformBuffer);
+
+        // Default camera buffer setup, 
+        // this will hold the view/projection matrices in every shader.
+        auto cameraBuffer = dx11::createConstantBuffer(sizeof(DirectX::XMMATRIX) * 2);
+        dx11InternalContext.cameraBufferId = dx11::constantBufferStorage.store(cameraBuffer);
+
+        // Setup a default projection and viewmatrix for our 2D rendering:
+        float viewWidth  = window.width;
+        float viewHeight = window.height;
+        float nearZ = 0.1f;
+        float farZ  = 100.0f;
+
+        auto ortho = DirectX::XMMatrixOrthographicLH(viewWidth, viewHeight, nearZ, farZ);
+        dx11InternalContext.orthoProjectionMatrix = ortho;
+        
+        DirectX::XMFLOAT4X4 orthoData;
+        DirectX::XMStoreFloat4x4(&orthoData, ortho);
+        DirectX::XMFLOAT4X4 viewData;
+        DirectX::XMStoreFloat4x4(&viewData, DirectX::XMMatrixIdentity());
+        dx11::Camera cam = { viewData, orthoData };
+        dx11::uploadConstantBufferDataForVertexShader(cameraBuffer->buffer, &cam, sizeof(dx11::Camera), 1);
         
         return dx11Context;
     }
@@ -304,7 +407,9 @@ void tiny_engine::drawTexture(GraphicsContext* dx11Context, Texture t, int x, in
         auto sampler = dx11::samplerStorage.get(dx11InternalContext.spriteSamplerId);
         auto inputLayout = dx11::inputLayoutStorage.get(dx11InternalContext.spriteShaderInputLayoutId);
         auto shader = dx11::shaderProgramStorage.get(dx11InternalContext.spriteShaderId);
-        dx11::drawTexture(t, sampler, shader, inputLayout, x, y);
+        auto texture = dx11::textureStorage.get(t.id);
+        auto model = dx11::modelStorage.get(dx11InternalContext.quadModelId);
+        dx11::drawTexture(texture, sampler, shader, inputLayout,  model, x, y);
     }
 }
 
@@ -333,23 +438,145 @@ void tiny_engine::bindBackBuffer(GraphicsContext* context, int x, int y,
 }
 
 
-tiny_engine::Texture tiny_engine::createTextureFromFile(GraphicsContext* context, 
+std::optional<tiny_engine::Texture> tiny_engine::createTextureFromFile(GraphicsContext* context, 
                                                     const std::string& fileName)
 {
     if (context->api == "dx11")
     {
-        auto dx11Texture = tiny_engine::detail::dx11::createTextureFromFile(fileName);
-        auto id = detail::dx11::textureStorage.store(dx11Texture);
-        return Texture { id };
+        auto dx11Texture = dx11::createTextureFromFile(fileName);
+        if (!dx11Texture) {
+            return std::nullopt;
+        }
+        auto id = dx11::textureStorage.store(dx11Texture);
+        return std::make_optional<tiny_engine::Texture>(tiny_engine::Texture { id });
 
     }
-    return {};
+    return std::nullopt;
 }
 
-// -----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // DirectX11 implementation
 //
 #ifdef TE_DX11
+
+ComPtr<ID3D11Buffer> dx11::createVertexBuffer(const float* data, size_t size, D3D11_USAGE usage) {
+    D3D11_BUFFER_DESC bd = {};
+    bd.Usage = usage;
+    bd.ByteWidth = size;
+    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    bd.CPUAccessFlags = usage == D3D11_USAGE_DYNAMIC ? D3D11_CPU_ACCESS_WRITE : 0;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = data;
+
+    ComPtr<ID3D11Buffer> vertexBuffer;
+    auto result = dx11Device->CreateBuffer(&bd, &initData, &vertexBuffer);
+    if (FAILED(result)) {
+        std::cerr << "Failed to create vertex buffer: " << std::hex << result << std::endl;
+        if (result == DXGI_ERROR_DEVICE_REMOVED && dx11Device) {
+            HRESULT hr = dx11Device->GetDeviceRemovedReason();
+            std::cerr << "Device removed reason: " << std::hex << hr << std::endl;
+        }
+        return nullptr;
+    }
+
+    return vertexBuffer;
+
+}
+
+ComPtr<ID3D11Buffer> tiny_engine::detail::dx11::createIndexBuffer(const uint32_t *data, size_t size, D3D11_USAGE usage)
+{
+    
+    D3D11_BUFFER_DESC bd = {};
+    bd.Usage = usage;
+    bd.ByteWidth = size;
+    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    bd.CPUAccessFlags = usage == D3D11_USAGE_DYNAMIC ? D3D11_CPU_ACCESS_WRITE : 0;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem = data;
+
+    ComPtr<ID3D11Buffer> indexBuffer;
+    auto result = dx11Device->CreateBuffer(&bd, &initData, &indexBuffer);
+    if (FAILED(result)) {
+        std::cerr << "Failed to create index buffer: " << std::hex << result << std::endl;
+        if (result == DXGI_ERROR_DEVICE_REMOVED && dx11Device) {
+            HRESULT hr = dx11Device->GetDeviceRemovedReason();
+            std::cerr << "Device removed reason: " << std::hex << hr << std::endl;
+        }
+        return nullptr;
+    }
+
+    return indexBuffer;
+
+}
+
+dx11::Model* dx11::createModelFromGeometry(const std::vector<float>& vertices,
+                                            const std::vector<uint32_t>& indices, 
+                                            D3D11_USAGE bufferUsage,
+                                            uint32_t stride) {
+
+    auto vb = dx11::createVertexBuffer(vertices.data(), 
+                        vertices.size() * sizeof(float), bufferUsage);
+    auto ib = dx11::createIndexBuffer(indices.data(),
+                        indices.size() * sizeof(uint32_t), bufferUsage);
+    return new dx11::Model { vb, ib, indices.size(), stride };
+    
+
+}
+
+void dx11::copyConstantBufferData(ComPtr<ID3D11Buffer> buffer, void* data, 
+                                                size_t size)
+{
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    dx11Context->Map(buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, data, size);
+    dx11Context->Unmap(buffer.Get(), 0);
+}    
+
+void dx11::uploadConstantBufferDataForPixelShader(ComPtr<ID3D11Buffer> buffer, void* data, 
+                                                size_t size, uint32_t slot) 
+{
+    copyConstantBufferData(buffer, data, size);
+    ID3D11Buffer* buffers[] = { buffer.Get() };
+    dx11Context->PSSetConstantBuffers(slot, 1, buffers);
+}
+
+void dx11::uploadConstantBufferDataForVertexShader(ComPtr<ID3D11Buffer> buffer, void* data, 
+                                                size_t size, uint32_t slot) 
+{
+    copyConstantBufferData(buffer, data, size);
+    ID3D11Buffer* buffers[] = { buffer.Get() };
+    dx11Context->VSSetConstantBuffers(slot, 1, buffers);
+    
+}
+
+dx11::Sampler* dx11::createSampler(D3D11_TEXTURE_ADDRESS_MODE addressMode, 
+            DirectX::XMVECTOR borderColor, D3D11_FILTER filter) 
+{
+
+    using namespace DirectX;
+    D3D11_SAMPLER_DESC sd;
+    ZeroMemory(&sd, sizeof(sd));
+    sd.AddressU = addressMode;
+    sd.AddressV = addressMode;
+    sd.AddressW = addressMode;
+    sd.BorderColor[0] = XMVectorGetX(borderColor);
+    sd.BorderColor[1] = XMVectorGetY(borderColor);
+    sd.BorderColor[2] = XMVectorGetZ(borderColor);
+    sd.BorderColor[3] = XMVectorGetW(borderColor);
+    sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    sd.Filter = filter;
+    sd.MinLOD = 0;
+    sd.MaxLOD = D3D11_FLOAT32_MAX;
+    ComPtr<ID3D11SamplerState> samplerState;
+    auto result = dx11Device->CreateSamplerState(&sd, &samplerState);
+    if (FAILED(result)) {
+        exit(1);
+    }
+    return new dx11::Sampler { samplerState };
+}
 
 
 dx11::InputLayout* dx11::createInputLayout(std::vector<dx11::VertexAttributeDescription> descs, 
@@ -400,6 +627,7 @@ std::string dx11::getSpritePixelShaderSource()
     float4 main(VOutput pixelShaderInput) : SV_TARGET
     {
         return imageTexture.Sample(samplerState, pixelShaderInput.uv);
+        //return float4(1, 0, 1, 1);
     }
 
     )";
@@ -409,31 +637,31 @@ std::string dx11::getSpritePixelShaderSource()
 std::string dx11::getSpriteVertexShaderSource() 
 {
 
-     return R"(
+    return R"(
     
-    struct VOutput
-    {
-        float4 pos : SV_POSITION;
-        float2 uv : TEXCOORD0;
-    };
+        struct VOutput
+        {
+            float4 pos : SV_POSITION;
+            float2 uv : TEXCOORD0;
+        };
 
+        cbuffer ObjectTransformBuffer : register(b0) {
+            row_major matrix world_matrix;
+        };
 
-    cbuffer ObjectTransformBuffer : register(b0) {
-        row_major matrix world_matrix;
-    };
+        cbuffer CameraBuffer : register(b1) {
+            row_major float4x4 view_matrix;
+            row_major float4x4 projection_matrix;
+        };
 
-    cbuffer CameraBuffer : register(b1) {
-        row_major float4x4 view_matrix;
-        row_major float4x4 projection_matrix;
-    };
-
-    VOutput main(float4 pos : POSITION, float2 uv : TEXCOORD0) {
-        VOutput output;
-        output.pos =  mul(pos, world_matrix);
-        output.pos = mul(output.pos, view_matrix);
-        output.pos = mul(output.pos, projection_matrix);
-        return output;
-    }
+        VOutput main(float4 pos : POSITION, float2 uv : TEXCOORD0) {
+            VOutput output;
+            output.pos =  mul(pos, world_matrix);
+            output.pos = mul(output.pos, view_matrix);
+            output.pos = mul(output.pos, projection_matrix);
+            output.uv = uv;
+            return output;
+        }
 
     )";
 }
@@ -480,9 +708,27 @@ dx11::PixelShader* dx11::createPixelShaderFromSource(const std::string& source)
 
 }
 
+dx11::ConstantBuffer* dx11::createConstantBuffer(size_t size)
+{
+    ComPtr<ID3D11Buffer> buffer = nullptr;
+    D3D11_BUFFER_DESC desc = {};
+    desc.ByteWidth = size;
+    desc.Usage = D3D11_USAGE_DYNAMIC;
+    desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    desc.MiscFlags = 0;
+    desc.StructureByteStride = 0;
 
-dx11::VertexShader* 
-dx11::createVertexShaderFromSource(const std::string& source) 
+    HRESULT hr = dx11Device->CreateBuffer(&desc, nullptr, &buffer);
+    if (FAILED(hr)) {
+        std::cerr << "Failed to create object buffer" << std::endl;
+        exit(1234);
+    }
+    return new ConstantBuffer {buffer};
+}
+
+
+dx11::VertexShader* dx11::createVertexShaderFromSource(const std::string& source) 
 {
     UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
     #if _DEBUG
@@ -557,18 +803,53 @@ void dx11::bindInputLayout(dx11::InputLayout* inputLayout)
    dx11Context->IASetInputLayout(inputLayout->inputLayout.Get());
 }
 
-void dx11::drawTexture(tiny_engine::Texture texture, dx11::Sampler* sampler, 
-        dx11::ShaderProgram* shader, dx11::InputLayout* inputLayout, int x, int y) 
+void dx11::drawTexture(dx11::DX11Texture* texture, dx11::Sampler* sampler, 
+        dx11::ShaderProgram* shader, dx11::InputLayout* inputLayout, 
+        dx11::Model* quadModel, int x, int y) 
 {
-    // First get our actual dx11 texture:
-    auto dx11Texture = textureStorage.get(texture.id);
-    bindTexture(dx11Texture, 0, sampler, 0); 
+    
+    // world matrix:
+    // Scale up to actual image size -> TODO
+    // move to xy position
+    auto scale = DirectX::XMMatrixScaling(64, 64, 1);
+    auto trans = DirectX::XMMatrixTranslation(x, y, 0.2);
+    auto world = scale * trans;
+    auto objectTransformBuffer = constantBufferStorage.get(dx11InternalContext.objectTransformBufferId);
+    
+    DirectX::XMFLOAT4X4 worldMatrixData;
+    DirectX::XMStoreFloat4x4(&worldMatrixData, world);
+    dx11::uploadConstantBufferDataForVertexShader(objectTransformBuffer->buffer, &world, sizeof(DirectX::XMFLOAT4X4), 0);
+    
+
+    bindTexture(texture, 0, sampler, 0); 
     bindShader(shader);
     bindInputLayout(inputLayout);
+    bindVertexBuffer(quadModel->vertexBuffer, quadModel->stride, 0);
+    bindIndexBuffer(quadModel->indexBuffer, 0);
+    drawIndexed(quadModel->indexCount, 0);
 
 
+    
     // We must bind the texture, shader, inputlayout, (later) constant buffers, 
     // vertex buffer, index buffer, then draw indexed.
+}
+
+void dx11::drawIndexed(uint32_t indexCount, uint32_t startIndex)
+{
+    dx11Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx11Context->DrawIndexed(indexCount, startIndex, 0);
+}
+
+void dx11::bindVertexBuffer(ComPtr<ID3D11Buffer> vertexBuffer, uint32_t stride, uint32_t offset)
+{
+    std::vector<ID3D11Buffer*> vertexBuffers = {vertexBuffer.Get()};
+    
+    dx11Context->IASetVertexBuffers(0, 1, vertexBuffers.data(), &stride, &offset);
+}
+
+void dx11::bindIndexBuffer(ComPtr<ID3D11Buffer> indexBuffer, uint32_t offset)
+{
+    dx11Context->IASetIndexBuffer(indexBuffer.Get(), DXGI_FORMAT_R32_UINT, offset);
 }
 
 void tiny_engine::detail::dx11::printDXGIError(HRESULT hr) {
@@ -591,8 +872,7 @@ void tiny_engine::detail::dx11::printDXGIError(HRESULT hr) {
 }
 
 
-tiny_engine::detail::dx11::DX11Texture*
-tiny_engine::detail::dx11::createTextureFromFile(const std::string& fileName)
+dx11::DX11Texture* dx11::createTextureFromFile(const std::string& fileName)
 {
 
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -600,6 +880,9 @@ tiny_engine::detail::dx11::createTextureFromFile(const std::string& fileName)
     Microsoft::WRL::ComPtr<IWICImagingFactory> wic;
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                      IID_PPV_ARGS(&wic));
+
+    ComPtr<IWICBitmapFlipRotator> flip;
+    wic->CreateBitmapFlipRotator(&flip);
 
     Microsoft::WRL::ComPtr<IWICBitmapDecoder> dec;
     std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> convWide;
@@ -616,10 +899,14 @@ tiny_engine::detail::dx11::createTextureFromFile(const std::string& fileName)
     conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA,
                      WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom);
 
+    flip->Initialize(conv.Get(), WICBitmapTransformFlipVertical);
+
     UINT w = 0, h = 0;
-    conv->GetSize(&w, &h);
+    flip->GetSize(&w, &h);
     std::vector<uint8_t> buffer(w * h * 4);
-    conv->CopyPixels(nullptr, w * 4, (UINT)buffer.size(), buffer.data());
+    flip->CopyPixels(nullptr, w * 4, (UINT)buffer.size(), buffer.data());
+
+
 
     D3D11_TEXTURE2D_DESC desc;
     ZeroMemory(&desc, sizeof(desc));
@@ -633,15 +920,18 @@ tiny_engine::detail::dx11::createTextureFromFile(const std::string& fileName)
     desc.ArraySize = 1;
     desc.SampleDesc.Count = 1;
     desc.SampleDesc.Quality = 0;
-    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
-    D3D11_SUBRESOURCE_DATA initialData = {buffer.data(), w * 4, 0};
+    D3D11_SUBRESOURCE_DATA initialData ={};
+    initialData.pSysMem = buffer.data();
+    initialData.SysMemPitch = w * 4;
+    initialData.SysMemSlicePitch = 0;
+
     ComPtr<ID3D11Texture2D> dxTexture;
     auto result = dx11Device->CreateTexture2D(&desc, &initialData, &dxTexture);
-    // TODO result check
-
-    result = dx11Device->CreateTexture2D(&desc, nullptr, &dxTexture);
-    // TODO result check
+    if (FAILED(result)) {
+        return nullptr;
+    }
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = desc.Format;
@@ -650,9 +940,11 @@ tiny_engine::detail::dx11::createTextureFromFile(const std::string& fileName)
     srvDesc.Texture2D.MipLevels = 1;
     
     ComPtr<ID3D11ShaderResourceView> srv; 
-    result = dx11Device->CreateShaderResourceView(dxTexture.Get(), &srvDesc, &srv);
-    // TODO check result
-    //
+    result = dx11Device->CreateShaderResourceView(dxTexture.Get(), &srvDesc, srv.GetAddressOf());
+    if (FAILED(result)) {
+        return nullptr;
+    }
+
     auto dx11Texture = new DX11Texture { dxTexture, nullptr, srv };
     return dx11Texture;
 
@@ -799,7 +1091,7 @@ bool tiny_engine::detail::dx11::init(Window window)
     dx11Context->RSSetState(dx11RasterState.Get());
 
     D3D11_SAMPLER_DESC samplerdesc;
-    ZeroMemory(&sd, sizeof(sd));
+    ZeroMemory(&samplerdesc, sizeof(samplerdesc));
     samplerdesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerdesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerdesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -917,7 +1209,7 @@ bool tiny_engine::detail::dx11::resizeSwapChain(HWND hwnd, int width, int height
         return false;
     }
 
-    result = dx11SwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&dx11BackBuffer);
+    result = dx11SwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)dx11BackBuffer.GetAddressOf());
     if (FAILED(result)) {
         std::cout << "backbuffer creation/retrieval on swapchain resizing failed" << std::endl;
         return false;
@@ -930,7 +1222,6 @@ bool tiny_engine::detail::dx11::resizeSwapChain(HWND hwnd, int width, int height
     rtvDesc.Texture2D.MipSlice = 0;
 
     result = dx11Device->CreateRenderTargetView(dx11BackBuffer.Get(), nullptr, &dx11rtv);
-    dx11BackBuffer->Release(); // Release temporary back buffer pointer
     if (FAILED(result)) {
         std::cout << "Render target view creation failed" << std::endl;
         return false;
